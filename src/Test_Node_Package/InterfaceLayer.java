@@ -53,25 +53,20 @@ public void onStart(ConnectedNode connectedNode)
     	  NodeConfiguration nodeConfiguration = NodeConfiguration.newPrivate();
           MessageFactory messageFactory = nodeConfiguration.getTopicMessageFactory();
           
-         
-          
-
-              
-          /*    
-          String sentence=new String();
+          String command_type=new String();
           Scanner scan = new Scanner(System.in);    
           System.out.println("Interface Layer(taskName):");
-          sentence = scan.nextLine();   // execution, on, Off        
+          command_type = scan.nextLine();   // execution, on, Off        
           
           
-          String command_type="execution";
+          String sentence="어른신 약 먹을 시간입니다.";
           action_execution_msgs.Command_list commandListMsg=messageFactory.newFromType(action_execution_msgs.Command_list._TYPE);
          commandListMsg.setCommandType(command_type);
          commandListMsg.setId(id);
 
          List<action_execution_msgs.Package> packageList=new Vector<action_execution_msgs.Package>();
           action_execution_msgs.Package packageMsg=messageFactory.newFromType(action_execution_msgs.Package._TYPE);
-          
+           
           packageMsg.setPackageName("ros_robot_expression_skills");      
           List<action_execution_msgs.Data> dataList=new Vector<action_execution_msgs.Data>();
             
@@ -126,10 +121,10 @@ public void onStart(ConnectedNode connectedNode)
       packageList.add(packageMsg);
       commandListMsg.setPackageList(packageList);  
       publisher.publish(commandListMsg);
-        
-  */
+       
+  
          
-       Thread.sleep(500);
+       Thread.sleep(10000);
    
         id++;
 	  

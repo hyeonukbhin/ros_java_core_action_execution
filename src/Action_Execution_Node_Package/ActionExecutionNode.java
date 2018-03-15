@@ -1,17 +1,7 @@
 package Action_Execution_Node_Package;
 
 import java.util.ArrayList;
-import java.util.Hashtable;
-import java.util.LinkedList;
 import java.util.List;
-import java.util.Queue;
-import java.util.Scanner;
-import java.util.Vector;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ConcurrentMap;
 
 import org.apache.commons.logging.Log;
 import org.ros.concurrent.CancellableLoop;
@@ -25,99 +15,123 @@ import org.ros.node.NodeMain;
 import org.ros.node.topic.Publisher;
 import org.ros.node.topic.Subscriber;
 
-import action_execution_msgs.Command_list;
+import Action_Execution_Node_Package.ActionExecution.MsgInfo;
+import PKG_Manager_Package.ProcessStateDef;
 
-class SharedPackageInfo{
-	action_execution_msgs.Command_list CommandList;
-	Vector<action_execution_msgs.Command_result> CommandResultListInput=new Vector<action_execution_msgs.Command_result>();
-}
-
-class ResultInfo{
-	String PackageName;
-	int Error;
-}
 
 public class ActionExecutionNode implements NodeMain{
 	
-	private ActionExecution mActionExecution;
-	private PackageActionSet mPackageActionSet=new PackageActionSet();
-	private ConcurrentMap<Integer, SharedPackageInfo> mSharedPackageTable = new ConcurrentHashMap<Integer, SharedPackageInfo>();
 	private MessageFactory mMessageFactory;
-	private Publisher<action_execution_msgs.Command_result_list> mPubToInterface;
+	private ActionExecution mActionExecution;
+	private MsgErrorMonitor mErrorMonitor;
+	private CommandDef mPackageActionSet=new CommandDef();
 	
+	private Publisher<action_execution_msgs.Command_result_list> mPubToAgent;
 	
-	
+	private Log mLog;
+
 	@Override
 	public void onStart(ConnectedNode connectedNode) {
 		final int Q_SIZE_MAX=100;	
 		
-		mActionExecution=new ActionExecution(connectedNode);		
+			
 		NodeConfiguration nodeConfiguration = NodeConfiguration.newPrivate();
 		mMessageFactory = nodeConfiguration.getTopicMessageFactory();
 		
-		String pubTopicToInterface="command_result_list";
-	    mPubToInterface=connectedNode.newPublisher(pubTopicToInterface, action_execution_msgs.Command_result_list._TYPE);
-	   
+		mActionExecution=new ActionExecution(connectedNode);	   
+		mErrorMonitor=new MsgErrorMonitor(connectedNode);
+		//mLog = connectedNode.getLog();
 		
+		String pubTopicToInterface="command_result_list";
+	    mPubToAgent=connectedNode.newPublisher(pubTopicToInterface, action_execution_msgs.Command_result_list._TYPE);
+	  
+	    synchronized (mActionExecution){
+	    	action_execution_msgs.Command_result_list bootResultMsg=mActionExecution.setLoadBoot();
+	    	 if(bootResultMsg.getCommandResultList().isEmpty()==false)
+	 	    {
+	 	    	mPubToAgent.publish(bootResultMsg);
+	 	    	System.out.println("#[Boot] Fail...");
+	 	    }
+	 	    else
+	 	    {
+	 	    	System.out.println("#[Boot] Success...");
+	 	    }
+		}
+	    
+	   
+	 
+	  
+	    final CancellableLoop stateCheckLoop = new CancellableLoop() {
+	    	@Override 
+	    	protected void loop(){
+	    	 
+	    		try{ 
+	    			onCheckTimeOut();
+	     
+	    			Thread.sleep(5000);
+	    			
+	    			onCheckRecoveryPkg();
+	
+	    		}catch(Exception e)
+	    		{
+	    			System.out.println("Node::Initailize Error()...");
+	    			
+	    		}
+	 
+	    		
+	    		
+	    	}
+	    };
+		
+	    
+	    
 		String interfaceSub_topicName="command_list";
 		Subscriber<action_execution_msgs.Command_list> interfaceSub=connectedNode.newSubscriber(interfaceSub_topicName, action_execution_msgs.Command_list._TYPE);
 	    interfaceSub.addMessageListener(new MessageListener<action_execution_msgs.Command_list>() {
 			@Override
 			public void onNewMessage(action_execution_msgs.Command_list commandList) {
 				System.out.println("#ActionExecutionNode[Command_list]");				
-				
-				commandList=mActionExecution.getFilledPackageIdMsg(commandList);
+				synchronized (mActionExecution){
+					commandList=mActionExecution.getFilledPackageIdMsg(commandList);
+		
+					if(mActionExecution.getCommandListFormatCheck(commandList)==true)
+					{
 	
-				if(mActionExecution.getCommandListFormatCheck(commandList)==true)
-				{
-
-					PackageActionSet.Action command = mPackageActionSet.getAction(commandList.getCommandType());
-					if(PackageActionSet.Action.PACKAGE_ON ==command)
-					{
-						action_execution_msgs.Command_result_list commandResultListMsg=mActionExecution.setOnCommand(commandList);
-						mPubToInterface.publish(commandResultListMsg);
-					}
-					else if(PackageActionSet.Action.PACKAGE_OFF ==command)
-					{
-						action_execution_msgs.Command_result_list commandResultListMsg=mActionExecution.setOffCommand(commandList);
-						mPubToInterface.publish(commandResultListMsg);
-						//mActionExecution.onDestroyAllPackage();
-					}
-					else if(PackageActionSet.Action.PACKAGE_EXECUTION==command)
-					{
-						boolean activeState=mActionExecution.isActiveAllPackage(commandList);
-						if(activeState==false) //It is impossible to execute some package
+						CommandDef.Type command = mPackageActionSet.getCommandType(commandList.getCommandType());
+						if(CommandDef.Type.PACKAGE_ON ==command)
 						{
-							action_execution_msgs.Command_result_list commandResultListMsg=mActionExecution.onSendActiveFailMsg(commandList);
-							mPubToInterface.publish(commandResultListMsg);
+							action_execution_msgs.Command_result_list commandResultListMsg=mActionExecution.setOnCommand(commandList);
+							mPubToAgent.publish(commandResultListMsg);
 						}
-						else
+						else if(CommandDef.Type.PACKAGE_OFF ==command)
 						{
-							SharedPackageInfo sharedPackageInfo=new SharedPackageInfo();
-							sharedPackageInfo.CommandList=commandList;
-							sharedPackageInfo.CommandResultListInput=mActionExecution.setExecutionCommand(commandList);
+							action_execution_msgs.Command_result_list commandResultListMsg=mActionExecution.setOffCommand(commandList);
+							mPubToAgent.publish(commandResultListMsg);
 							
+						}	
+						else if(CommandDef.Type.PACKAGE_EXECUTION==command)
+						{
+							mActionExecution.setMsgInfo(commandList, mActionExecution.setExecutionCommand(commandList));
+							if(mActionExecution.isCompleteCommand(commandList.getId()))
+							{
+								action_execution_msgs.Command_result_list msg=mActionExecution.getCommandResultListMsg(commandList.getId());
+								mPubToAgent.publish(msg);
+								mActionExecution.setDeleteMsgInfo(commandList.getId());
+							}
 							
-							if(sharedPackageInfo.CommandList.getPackageList().size()==sharedPackageInfo.CommandResultListInput.size())
-							{
-								action_execution_msgs.Command_result_list resultListMsg=mMessageFactory.newFromType(action_execution_msgs.Command_result_list._TYPE);
-								resultListMsg.setId(sharedPackageInfo.CommandList.getId());
-								resultListMsg.setCommandResultList(sharedPackageInfo.CommandResultListInput);
-								mPubToInterface.publish(resultListMsg);
-							}
-							else
-							{
-								mSharedPackageTable.put(commandList.getId(), sharedPackageInfo);
-							}
 						}
+						else if(CommandDef.Type.PACKAGE_RECOVERY==command)
+						{
+							action_execution_msgs.Command_result_list commandResultListMsg=mActionExecution.setRecoveryCommand(commandList);
+							mPubToAgent.publish(commandResultListMsg);
+						}
+						
 					}
-					
+					else
+					{
+						sendErrorMessageToAgent(commandList, ProcessStateDef.State.PROCESS_ERROR.getInt());
+					}
 				}
-				else
-				{
-					sendErrorMessageToInterface(commandList, PackageActionSet.Action.ERROR_TOPIC_NULL.getIDAction());
-				}
-				
 				
 			}
 		},Q_SIZE_MAX);
@@ -131,50 +145,48 @@ public class ActionExecutionNode implements NodeMain{
 			@Override
 			public void onNewMessage(action_execution_msgs.Command_result message) {
 				System.out.println("#ActionExecutionNode[Command_result]");
-				SharedPackageInfo sharedPackageInfo=mSharedPackageTable.get(message.getId());
-				//패키지에서 아이디 잘 못 올려보내면 없는 id로 테이블에서 검색하게 되서 널값나옴. 추후에 처리 필요함.
-				if(sharedPackageInfo != null)
-				{
-					sharedPackageInfo.CommandResultListInput.add(message);
-					if(sharedPackageInfo.CommandList.getPackageList().size()==sharedPackageInfo.CommandResultListInput.size())
+				synchronized (mActionExecution){
+					mActionExecution.setMsgInfo(message);
+					if(mActionExecution.isCompleteCommand(message.getId()))
 					{
-						action_execution_msgs.Command_result_list resultListMsg=mMessageFactory.newFromType(action_execution_msgs.Command_result_list._TYPE);
-						resultListMsg.setId(sharedPackageInfo.CommandList.getId());
-						resultListMsg.setCommandResultList(sharedPackageInfo.CommandResultListInput);
-						mPubToInterface.publish(resultListMsg);
-						mSharedPackageTable.remove(sharedPackageInfo.CommandList.getId());
+						action_execution_msgs.Command_result_list msg=mActionExecution.getCommandResultListMsg(message.getId());
+						mPubToAgent.publish(msg);
+						mActionExecution.setDeleteMsgInfo(message.getId());
 					}
-					else
-					{
-						mSharedPackageTable.put(message.getId(), sharedPackageInfo);
-					} 
 				}
-				
 				
 			}
 		},10);
-	  
-	     	  
+	    
+	    System.out.println("Load Complete");
+	    connectedNode.executeCancellableLoop(stateCheckLoop);    	  
 	  
 	}
 	
 	@Override
 	public void onShutdown(Node node) {
 		System.out.println("ActionExecutionNode-->onShutdown");
+		synchronized (mActionExecution){
+			mActionExecution.onDestroyAllPackage();
+		}
 		
 	}
 
 	@Override
 	public void onShutdownComplete(Node node) {
-		// TODO Auto-generated method stub
+		synchronized (mActionExecution){
+			mActionExecution.onDestroyAllPackage();
+		}
 		System.out.println("ActionExecutionNode-->onShutdownComplete");
 		
 	}
 
 	@Override
 	public void onError(Node node, Throwable throwable) {
-		// TODO Auto-generated method stub
 		System.out.println("ActionExecutionNode-->onError");
+		synchronized (mActionExecution){
+			mActionExecution.onDestroyAllPackage();
+		}
 		
 	}
 
@@ -184,7 +196,50 @@ public class ActionExecutionNode implements NodeMain{
 		return GraphName.of("Action_Execution_Node_Package/ActionExecutionNode");
 	}
 	
-	private void sendErrorMessageToInterface(action_execution_msgs.Command_list commandListMsg, int errorId)
+	private void onCheckRecoveryPkg()
+	{
+		synchronized (mActionExecution){		        		
+    		for(String pkgName: mActionExecution.getActivePkgList())
+    		{
+    			if(mActionExecution.isActivePackage(pkgName)==false)
+    			{	        				
+    				action_execution_msgs.Command_list commandListMsg=mActionExecution.getCommandListMsg(CommandDef.ERROR_COMMAND_ID, CommandDef.Type.PACKAGE_RECOVERY.toString(), pkgName);
+    				action_execution_msgs.Command_result_list resultListMsg=mActionExecution.setRecoveryCommand(commandListMsg);
+    				
+    				if(resultListMsg.getCommandResultList().get(0).getSuccess()==false)
+    				{
+    					mPubToAgent.publish(resultListMsg);
+    				}
+    				else
+    				{
+    					System.out.println("Recovery 성공");
+    				}
+    				
+    			}
+    		}
+		}
+	}
+	
+	private void onCheckTimeOut()
+	{
+		synchronized (mActionExecution) {
+			for(int commandId: mActionExecution.getMsgInfoIdList())
+			{
+				MsgInfo msgInfo=mActionExecution.getMsgInfo(commandId);
+				ArrayList<String> timeOutList=mErrorMonitor.getTimeOutPkgNameList(msgInfo);
+				int numOfResult=timeOutList.size()+msgInfo.CommandResultListInput.size();
+				if(numOfResult==msgInfo.CommandList.getPackageList().size())
+				{
+					sendErrorMessageToAgent(commandId, msgInfo.CommandResultListInput, timeOutList, ProcessStateDef.State.PROCESS_ERROR.getInt());
+					mActionExecution.setDeleteMsgInfo(commandId);
+				}
+				
+			}
+			
+		}
+	}
+	
+	private void sendErrorMessageToAgent(action_execution_msgs.Command_list commandListMsg, int errorId)
 	{
 		List<action_execution_msgs.Command_result> commandResultListInput = new ArrayList<action_execution_msgs.Command_result>();
 		action_execution_msgs.Command_result_list commandResultList=mMessageFactory.newFromType(action_execution_msgs.Command_result_list._TYPE);
@@ -198,8 +253,31 @@ public class ActionExecutionNode implements NodeMain{
 		}
 		commandResultList.setCommandResultList(commandResultListInput);
 		commandResultList.setId(commandListMsg.getId());
-		mPubToInterface.publish(commandResultList);
+		mPubToAgent.publish(commandResultList);
 	}
+	
+	private void sendErrorMessageToAgent(int commandId, List<action_execution_msgs.Command_result> resultListMsg, ArrayList<String> timeOutNameList, int errorId)
+	{
+		List<action_execution_msgs.Command_result> commandResultListInput = resultListMsg;
+		action_execution_msgs.Command_result_list commandResultList=mMessageFactory.newFromType(action_execution_msgs.Command_result_list._TYPE);
+		
+		for(String pkgName: timeOutNameList)
+		{
+			action_execution_msgs.Command_result commandResult =mMessageFactory.newFromType(action_execution_msgs.Command_result._TYPE);
+			commandResult.setErrorId(errorId);
+			commandResult.setSuccess(false);
+			commandResult.setPackageName(pkgName);
+			commandResultListInput.add(commandResult);
+		}
+
+		commandResultList.setCommandResultList(commandResultListInput);
+		commandResultList.setId(commandId);
+		mPubToAgent.publish(commandResultList);
+	}
+	
+	
+	
+	
 	
 
 

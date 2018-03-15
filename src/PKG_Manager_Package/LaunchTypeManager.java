@@ -1,220 +1,197 @@
 package PKG_Manager_Package;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
+
+import java.util.ArrayList;
 import java.util.Hashtable;
-import java.util.List;
-import java.util.Vector;
 
-import org.ros.message.MessageFactory;
+import org.omg.CORBA.TIMEOUT;
 import org.ros.node.ConnectedNode;
-import org.ros.node.NodeConfiguration;
-import org.ros.node.topic.Publisher;
 
-import Action_Execution_Node_Package.PackageInfoManager;
+import PKG_Manager_Package.ProcessStateDef.State;
+import Package_Info_Package.PackageInfo;
+import Package_Info_Package.PackageInfoManager;
+import Package_Info_Package.PackageInfo.InterfacePackageInfo;
+import Package_Info_Package.PackageInfo.SubNodeInfo;
 
 
 
-public class LaunchTypeManager {
-	private MessageFactory mMessageFactory;
-	private ConnectedNode mConnectedNode;
-	private PackageInfoManager mPackageInfo=new PackageInfoManager();
-	private Hashtable<String, Process> mProcessTable=new Hashtable<String, Process>();
-	private Hashtable<String, Publisher<action_execution_msgs.Package>> mPublisherTable=new Hashtable<String, Publisher<action_execution_msgs.Package>>();
-	private final String INTERFACE_ID="_interface";
+public class LaunchTypeManager extends IControlFunction{
+
+	private Hashtable<String, Process> mProcessTable;
+	private PackageInfoManager mLaunchInfoManager;
 	
+	private static LaunchTypeManager mInstance=new LaunchTypeManager();
+	private InterfaceTypeManaer mInterfaceManager;
 	
-	public LaunchTypeManager(ConnectedNode connectedNode){
-		mConnectedNode=connectedNode;
-		NodeConfiguration nodeConfiguration = NodeConfiguration.newPrivate();
-		mMessageFactory = nodeConfiguration.getTopicMessageFactory();
+	private final int COMMAND_TIME=500;
+	
+	public LaunchTypeManager() {
+		mProcessTable=new Hashtable<String, Process>();
+		mInterfaceManager=InterfaceTypeManaer.getInstance();
 	}
 	
-	public boolean onStartPackage(String packageName)
+	static public LaunchTypeManager getInstance()
 	{
-		String runInterfaceCommand=mPackageInfo.getInterfaceRunCommand(mPackageInfo.LAUNCH_TYPE, packageName);
-		String interfaceName=packageName+INTERFACE_ID;		
-		String interfaceTopicName=mPackageInfo.getInterfaceTopicName(mPackageInfo.LAUNCH_TYPE, packageName);
-	
-		Publisher<action_execution_msgs.Package> publisher=mConnectedNode.newPublisher(interfaceTopicName, action_execution_msgs.Package._TYPE);
-		mPublisherTable.put(interfaceName, publisher);
-	
-		String packageRunCommand=mPackageInfo.getPackageRunCommand(mPackageInfo.LAUNCH_TYPE, packageName);		
-		try {
-			Process interfaceProcess=Runtime.getRuntime().exec(runInterfaceCommand);
-			mProcessTable.put(interfaceName, interfaceProcess);
-			Process packageProcess=Runtime.getRuntime().exec(packageRunCommand);
-			mProcessTable.put(packageName, packageProcess);
-		}  catch (Exception e) {
-			return false;
-			}
-	 
+		if(mInstance==null)
+			mInstance=new LaunchTypeManager();
+		
+		return mInstance;
+	}
+
+
+	@Override
+	public boolean onInitialize(ConnectedNode connectedNode) {
+		
+		mLaunchInfoManager=PackageInfoManager.getInstance();
 		
 		return true;
 	}
 	
-	public boolean onSendMSGToNode(String nodeName, action_execution_msgs.Package packageMsg)
-	{
-		Publisher<action_execution_msgs.Package> publisher=mPublisherTable.get(nodeName+INTERFACE_ID);
-		if(publisher.hasSubscribers()==false || publisher == null)
-		{
-			return false;
-		}
-		{
-			publisher.publish(packageMsg);
-			return true;
-		}
-		
-	}
-	
-	public boolean onDestroyPackage(String packageName)
-	{
-		String killType=mPackageInfo.getPackageKillCommand(mPackageInfo.LAUNCH_TYPE, packageName);
-		if(killType.equals(PackageInfoManager.NODE_KILL)==true)
+	@Override
+	public boolean onBoot(String id) {
+		try{
+			PackageInfo.LaunchPackageInfo info=mLaunchInfoManager.getLaunchPkgInfo(id);
+			boolean bootType=info.boot;
+			if(bootType==true)
+			{
+				return onStart(id);
+			}
+		}catch(Exception e)
 		{
 			
-			if(setNodeKill(packageName)==false)
-			{
-				return false;
-			}
-			
-			String interfaceGraphName=mPackageInfo.getInterfaceGraphName(mPackageInfo.LAUNCH_TYPE, packageName);
-			if(setNodeKill(interfaceGraphName)==false)
-			{
-				return false;
-			}
-		}
-		else if(killType.equals(PackageInfoManager.PROCESS_KILL)==true)
-		{
-			
-			if(setProcessKill(packageName)==false)
-			{
-				return false;
-			}
-			if(setProcessKill(packageName+INTERFACE_ID)==false)
-			{
-				return false;
-			}
 		}
 		
 		return true;
 	}
-	
-	
-	
-	public boolean getOnActiveState(String packageName)
-	{
-		try {
-			Vector<String> nodeGraphNameList=mPackageInfo.getSubscriberNodeGraphNameList(mPackageInfo.LAUNCH_TYPE, packageName);
-			String interfaceGraphName=mPackageInfo.getInterfaceGraphName(mPackageInfo.LAUNCH_TYPE, packageName);
-			nodeGraphNameList.add(interfaceGraphName);
-					
-			Process process=Runtime.getRuntime().exec("rosnode list");
-			BufferedReader screen=new BufferedReader(new InputStreamReader(process.getInputStream()));
-			String screenStr=new String();
-			Hashtable<String,Boolean> screenNodeMap=new Hashtable<String,Boolean>();
-			while((screenStr=screen.readLine())!=null)
-			{
-				screenNodeMap.put(screenStr, true);
-			}
 
-			for(int numOfNode=0; numOfNode<nodeGraphNameList.size(); numOfNode++)
-			{
-				String graphName="/"+nodeGraphNameList.get(numOfNode);
-				if(screenNodeMap.containsKey(graphName)==false)
-				{
-					screen.close();
-					return false;
-				}
-				
-			}
-			screen.close();
+	
+	@Override
+	public boolean onStart(String id) {
+		try{
+			PackageInfo.LaunchPackageInfo info=mLaunchInfoManager.getLaunchPkgInfo(id);
+			State nodeState=onGetAtciveState(id);
 			
-			return true;
-			
-		} catch (Exception e) {
-
-			return false;
-		}
-	
-	}
-	
-	public boolean getOffActiveState(String packageName)
-	{
-		try {
-			Vector<String> nodeGraphNameList=mPackageInfo.getSubscriberNodeGraphNameList(mPackageInfo.LAUNCH_TYPE, packageName);
-			String interfaceGraphName=mPackageInfo.getInterfaceGraphName(mPackageInfo.LAUNCH_TYPE, packageName);
-			nodeGraphNameList.add(interfaceGraphName);
-					
-			Process process=Runtime.getRuntime().exec("rosnode list");
-			BufferedReader screen=new BufferedReader(new InputStreamReader(process.getInputStream()));
-			String screenStr=new String();
-			Hashtable<String,Boolean> screenNodeMap=new Hashtable<String,Boolean>();
-			while((screenStr=screen.readLine())!=null)
-			{
-				screenNodeMap.put(screenStr, true);
-				System.out.println("screen: "+ screenStr);
-			}
-
-			for(int numOfNode=0; numOfNode<nodeGraphNameList.size(); numOfNode++)
-			{
-				String graphName="/"+nodeGraphNameList.get(numOfNode);
-				if(screenNodeMap.containsKey(graphName)==true)
-				{
-					screen.close();
-					return true;
-				}
-				
-			}
-			screen.close();
-			return false;
-			
-		} catch (Exception e) {
-
-			return false;
-		}
-	
-	}
-	
-	public void setDeleteTable(String name)
-	{
-		mProcessTable.remove(name);
-		mProcessTable.remove(name+INTERFACE_ID);
-	}
-	
-	private boolean setNodeKill(String name)
-	{
-		if(mProcessTable.containsKey(name)==true)
-		{
-			try {
-				String graphName=mPackageInfo.getPackageGraphName(mPackageInfo.BASE_TYPE, name);
-				String killCommand="rosnode kill /"+graphName;
-				Runtime.getRuntime().exec(killCommand);		
-				
+			if(nodeState.equals(State.PROCESS_ON))
+			{				
 				return true;
+			}	
+			else if(nodeState.equals(State.PROCESS_OFF))
+			{
+				if(mInterfaceManager.onStart(info.interfaceId)==false)
+					return false;
 				
-			} catch (IOException e) {
-				return false;
+				Process process=setCommand(info.runCommand);
+				mProcessTable.put(info.id, process);
+				
+				Thread.sleep(info.loadTimeOut);
+				
+				return onGetAtciveState(id).equals(State.PROCESS_ON);
 			}
-		}
-		else
+			else 
+			{
+				return onRecovery(id);
+			}
+		}catch(Exception e)
 		{
 			return false;
 		}
+		
 	}
+	@Override
+	public boolean onExecute(String id, action_execution_msgs.Package msg) {
+		
+		try{
+			PackageInfo.LaunchPackageInfo info=mLaunchInfoManager.getLaunchPkgInfo(id);
+			
+			if(onStart(id)==true)
+			{
+				return mInterfaceManager.onExecute(info.interfaceId, msg);
+			}
+			
+		}catch(Exception e)
+		{
+			return false;
+		}
+		
+		return false;
+	}
+	@Override
+	public boolean onDestroy(String id) {
+		try{
+			PackageInfo.LaunchPackageInfo info=mLaunchInfoManager.getLaunchPkgInfo(id);
+			State nodeState=onGetAtciveState(id);
+			if(nodeState != State.PROCESS_OFF)
+			{
+				if(mInterfaceManager.onDestroy(info.interfaceId)==true)
+				{
+					setProcessKill(mProcessTable.get(info.id));	
+					mProcessTable.remove(id);
+					Thread.sleep(COMMAND_TIME);
+				}
+				
+			}
+
+		}catch(Exception e)
+		{
+			return false;
+		}
+		
+		return onGetAtciveState(id).equals(State.PROCESS_OFF);
+	}
+	@Override
+	public boolean onRecovery(String id) {
+		try{
+			PackageInfo.LaunchPackageInfo info=mLaunchInfoManager.getLaunchPkgInfo(id);
+			if((mInterfaceManager.onDestroy(info.interfaceId)==true) && (onDestroy(id)==true))
+			{
+				if((mInterfaceManager.onStart(info.interfaceId)==true) && (onStart(id)==true))
+					return true;
+			}
+			
+		}catch(Exception e)
+		{
+			return false;
+		}
+		
+		return false;
+	}
+	@Override
+	public State onGetAtciveState(String id) {
+		
+		try{
+			int numOfCheckedNode=0;
+			PackageInfo.LaunchPackageInfo info=mLaunchInfoManager.getLaunchPkgInfo(id);
+		
+			for(String subNodeName:info.subNodeGraphNameList)
+			{
+				if(isActiveNode(subNodeName)==true)
+					numOfCheckedNode=numOfCheckedNode+1;
+			}
+						
+			State interfaceState=mInterfaceManager.onGetAtciveState(info.interfaceId);
+			if(interfaceState.equals(State.PROCESS_OFF) || interfaceState.equals(State.NONE_TAG))
+			{
+				if(numOfCheckedNode==0)
+					return State.PROCESS_OFF;
+			}
+			
+			if(interfaceState.equals(State.PROCESS_ON)||interfaceState.equals(State.NONE_TAG))
+			{
+				if(numOfCheckedNode==info.subNodeGraphNameList.size())
+					return State.PROCESS_ON;
+			}
+
+		}catch(Exception e)
+		{
+			return State.PROCESS_ERROR;
+		}
+		
+		return State.PROCESS_ERROR;
+
+	}
+
+
 	
-	private boolean setProcessKill(String name)
-	{
-		if(mProcessTable.containsKey(name)==true)
-		{
-			Process process=mProcessTable.get(name);
-			process.destroy();				
-			return true;
-		}
-		else
-		{
-			return false;
-		}
-	}
+	
+	
 }
